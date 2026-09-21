@@ -12,7 +12,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools.retriever import create_retriever_tool
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import ToolCallLimitMiddleware
 
 
 
@@ -38,6 +38,22 @@ def chunk_code(docs: list) -> list:
     return splitter.split_documents(docs)
 
 
+def format_agent_response(content) -> str:
+   if isinstance(content, str):
+       return content
+
+   if isinstance(content, list):
+       text_parts = []
+       for block in content:
+           if isinstance(block, str):
+               text_parts.append(block)
+           elif isinstance(block, dict) and block.get("type") == "text":
+               text_parts.append(block.get("text", ""))
+       return "\n".join(part for part in text_parts if part)
+
+   return str(content)
+
+
 # Build vector store
 def build_vector_store(chunks: list) -> Chroma:
     embeddings = HuggingFaceEmbeddings(model_name = "all-MiniLM-L6-v2")
@@ -59,12 +75,10 @@ def build_agent(vector_sotre: Chroma):
                        "Refrence specific file and function names."
                        "If not found say 'I could not find that in the codeabase'."),
         middleware=[
-                           ModelCallLimitMiddleware(run_limit = 5,exit_behaviour = "end"),
-                           TodoListMiddleware(tool_name="search_codebase", run_limit=2, exit_behaviour="end")
+        ModelCallLimitMiddleware(run_limit = 5,exit_behavior = "end"),
+        ToolCallLimitMiddleware(tool_name="search_codebase", run_limit=2, exit_behavior="end")
     ]
     )
-
-
 
 if __name__ == "__main__":
 
@@ -85,15 +99,22 @@ if __name__ == "__main__":
     print("Ready. Ask your question. Type 'exit' to exit")
 
     while True:
-        question = input("\n You ").strip()
+        question = input("\n You: ").strip()
         if not question or question.lower() in ("exit", "quit"):
             break
 
+        final_text = ""
         for step in agent.stream(
             {"messages":[{"role":"user","content":question}]},
             stream_mode="values"
         ):
-            last_msg = step["messages"][-1]
-            if not getattr(last_msg, "tool_calls", None):
-                print(f"Agent: {last_msg.content}")
+            for msg in step.get("messages", []):
+                if getattr(msg, "tool_calls", None):
+                    continue
+                text = format_agent_response(getattr(msg, "content", ""))
+                if text:
+                    final_text = text
+
+        if final_text:
+            print(f"Agent: {final_text}")
 
